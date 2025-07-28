@@ -6,20 +6,47 @@
 
 #include "raylib.h"
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-const unsigned char NOOP = 0;
-const unsigned char DOWN = 1;
-const unsigned char UP = 2;
-const unsigned char LEFT = 3;
-const unsigned char RIGHT = 4;
+// clang-format off
+
+const char one_goal[] = {
+    'G', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+    'O', 'O', 'O', 'O', 'O', 'C', 'C', 'C', 'C',
+    'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C',
+    'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+    'O', 'O', 'O', 'D', 'A', 'T', 'O', 'O', 'O',
+    'O', 'O', 'O', 'O', 'C', 'O', 'O', 'O', 'O',
+    'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+    'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+    'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+};
+
+const int NUM_ANIMALS = 3;
+const int ANIMAL_FEATURES = 3;
+
+float ANIMALS[NUM_ANIMALS][ANIMAL_FEATURES] = {
+  {1.0, 2.0, 3.0},
+  {3.0, 2.0, 1.0},
+  {3.0, 1.0, 2.0}
+};
+
+const unsigned char DOWN = 0;
+const unsigned char UP = 1;
+const unsigned char LEFT = 2;
+const unsigned char RIGHT = 3;
+const unsigned char NOOP = 4;
 
 const unsigned char EMPTY = 0;
 const unsigned char AGENT = 1;
-const unsigned char DOG = 2;
-const unsigned char CAT = 3;
+const unsigned char GOAL = 2;
+const unsigned char DOG = 3;
+const unsigned char CAT = 4;
+const unsigned char TIGER = 5;
+const unsigned char WALL = 6;
 
 // Required struct. Only use floats!
 typedef struct {
@@ -31,24 +58,37 @@ typedef struct {
   float n; // Required as the last field
 } Log;
 
+typedef struct Map {
+  const char *layout;
+  const uint8_t columns;
+  const uint8_t rows;
+} Spec;
+
 // Required that you have some struct for your env
 // Recommended that you name it the same as the env file
 typedef struct {
   Log log; // Required field. Env binding code uses this to aggregate logs
-  unsigned char *observations; // size x size x (feature_dim + 1)
-  unsigned char *asset_map;    // size x size
+  float *observations; // size x size x (feature_dim + 1)
+  unsigned char *obs_assets;    // size x size
+  float *map; // map_rows x map_cols x (feature_dim + 1)
+  unsigned char *asset_map;    // map_rows x map_cols
+  Spec *spec;
   int *actions;                // up, down, left, right
   float *rewards;              // +1 for feature rn...
   unsigned char
       *terminals; // Required. We don't yet have truncations as standard yet
-  int size;
-  int feature_dim;
-  int n_classes;
-  float *animals; // n_classes x feature_dim
+  uint8_t size;
   int tick;
-  int r;
-  int c;
+  uint8_t r;
+  uint8_t c;
+  int start_pos;
 } RepGrid;
+
+Spec initial_layout = {
+    .layout = one_goal,
+    .columns = 9,
+    .rows = 9,
+};
 
 void add_log(RepGrid *env) {
   env->log.perf += (env->rewards[0] > 0) ? 1 : 0;
@@ -58,19 +98,19 @@ void add_log(RepGrid *env) {
   env->log.n++;
 }
 
-double gaussian_noise() {
+float gaussian_noise() {
   static int has_spare = 0;
-  static double spare;
+  static float spare;
 
   if (has_spare) {
     has_spare = 0;
     return spare;
   }
 
-  double u, v, s;
+  float u, v, s;
   do {
-    u = ((double)rand() / RAND_MAX) * 2.0 - 1.0;
-    v = ((double)rand() / RAND_MAX) * 2.0 - 1.0;
+    u = ((float)rand() / RAND_MAX) * 2.0 - 1.0;
+    v = ((float)rand() / RAND_MAX) * 2.0 - 1.0;
     s = u * u + v * v;
   } while (s >= 1.0 || s == 0.0);
 
@@ -81,62 +121,103 @@ double gaussian_noise() {
 }
 
 void allocate_repgrid(RepGrid *env) {
-  env->observations = (unsigned char *)calloc(
-      env->size * env->size * (env->feature_dim + 1), sizeof(unsigned char));
+  env->observations = (float *)calloc(
+      env->size * env->size * (ANIMAL_FEATURES + 1), sizeof(float));
   env->actions = (int *)calloc(1, sizeof(int));
   env->rewards = (float *)calloc(1, sizeof(float));
   env->terminals = (unsigned char *)calloc(1, sizeof(unsigned char));
+  env->obs_assets =
+      (unsigned char *)calloc(env->size * env->size, sizeof(unsigned char));
 }
 
 void free_allocated_repgrid(RepGrid *env) {
   free(env->rewards);
   free(env->observations);
+  free(env->obs_assets);
   free(env->actions);
   free(env->terminals);
 }
 
-void init_repgrid(RepGrid *env) {
+void alloc_assets(RepGrid *env) {
+  env->spec = &initial_layout;
+  env->map = (float *)calloc(
+      env->spec->rows * env->spec->columns * (ANIMAL_FEATURES + 1), sizeof(float));
   env->asset_map =
-      (unsigned char *)calloc(env->size * env->size, sizeof(unsigned char));
-  env->animals =
-      (float *)calloc(env->feature_dim * env->n_classes, sizeof(float));
-  for (int i = 0; i < env->n_classes; i++) {
-    for (int j = 0; j < env->feature_dim; j++) {
-      env->animals[i * env->feature_dim + j] = i * 3;
-    }
-  }
+      (unsigned char *)calloc(env->spec->rows * env->spec->columns, sizeof(unsigned char));
 }
-void init_animals(float *animals) {}
 
-// Required function
-void c_reset(RepGrid *env) {
-  int tiles = env->size * env->size;
-  int ntiles = tiles * env->feature_dim;
-  memset(env->observations, 0, ntiles * sizeof(unsigned char));
-  memset(env->asset_map, 0, tiles * sizeof(unsigned char));
-
-  env->observations[tiles / 2] = AGENT;
-  env->asset_map[tiles / 2] = AGENT;
-  env->r = env->size / 2;
-  env->c = env->size / 2;
+void init_repgrid(RepGrid *env) {
+  alloc_assets(env);
   env->tick = 0;
-  int animal_idx;
-  for (int n = 0; n < env->n_classes; n++) {
-    int animal = n + 2;
-    int n_animals = rand() % 4;
-    for (int i = 0; i < n_animals; i++) {
-      do {
-        animal_idx = rand() % tiles;
-      } while (env->asset_map[animal_idx] != EMPTY);
+
+  for (int r = 0; r < env->spec->rows; r++) {
+    for (int c = 0; c < env->spec->columns; c++) {
+      int idx = env->spec->columns * r + c;
       // track true animals for rendering
-      env->asset_map[animal_idx] = animal;
-      // fill out the features in the obs space
-      for (int j = 0; j < env->feature_dim; j++) {
-        env->observations[tiles * env->feature_dim + animal_idx] =
-            env->animals[n * env->feature_dim + j] + gaussian_noise();
+      char curr = env->spec->layout[idx];
+      if (curr == 'O') { 
+        env->map[idx] = EMPTY;
+        env->asset_map[idx] = EMPTY;
+      } else if (curr == 'G') { 
+        env->map[idx] = GOAL;
+        env->asset_map[idx] = GOAL;
+      } else if (curr == 'A') { 
+        env->start_pos = idx;
+      } else {
+        unsigned char ANIMAL_TYPE;
+        if (curr == 'D') { 
+          env->asset_map[idx] = DOG;
+          ANIMAL_TYPE = DOG;
+        } else if (curr == 'C') { 
+          env->asset_map[idx] = CAT;
+          ANIMAL_TYPE = CAT;
+        } else if (curr == 'T') { 
+          env->asset_map[idx] = TIGER;
+          ANIMAL_TYPE = TIGER;
+        }
+        // fill out the features in the obs space
+        int tile = env->spec->rows * env->spec->columns;
+        for (int j = 0; j < ANIMAL_FEATURES; j++) {
+          env->map[(j + 1) * tile + idx] = ANIMALS[(ANIMAL_TYPE - 3)][j] + gaussian_noise();
+        }
       }
     }
   }
+}
+
+void set_feature_obs(RepGrid *env) {
+  int half_obs = env->size / 2;
+  int obs_tile = env->size * env->size;
+  int map_tile = env->spec->rows * env->spec->columns;
+  memset(env->observations, 0, obs_tile * (ANIMAL_FEATURES + 1) * sizeof(float));
+  memset(env->obs_assets, 0, obs_tile * sizeof(unsigned char));
+
+  for (int dy = -half_obs; dy <= half_obs; dy++) {
+      for (int dx = -half_obs; dx <= half_obs; dx++) {
+          int y = env->r + dy;
+          int x = env->c + dx;
+          if (x >= 0 && x < env->spec->columns && y >= 0 && y < env->spec->rows) {
+            for (int i = 0; i < ANIMAL_FEATURES + 1; i++) {
+              env->observations[i*obs_tile + (dy + half_obs)*env->size + (dx + half_obs)] = env->map[i * map_tile + y*env->spec->columns + x];
+            }
+            env->obs_assets[(dy + half_obs)*env->size + (dx + half_obs)] = env->asset_map[y*env->spec->columns + x];
+          } else {
+            env->observations[(dy + half_obs)*env->size + (dx + half_obs)] = WALL;
+            env->obs_assets[(dy + half_obs)*env->size + (dx + half_obs)] = WALL;
+          }
+      }
+  }
+  env->observations[obs_tile / 2] = AGENT;
+  env->obs_assets[obs_tile / 2] = AGENT;
+}
+
+void c_reset(RepGrid *env) {
+  int start_pos = env->start_pos;
+  env->r = start_pos / env->spec->rows;
+  env->c = start_pos % env->spec->columns;
+
+  env->tick = 0;
+  set_feature_obs(env);
 }
 
 // Required function
@@ -158,8 +239,7 @@ void c_step(RepGrid *env) {
     env->c -= 1;
   }
 
-  if (env->tick > 3 * env->size || env->r < 0 || env->c < 0 ||
-      env->r >= env->size || env->c >= env->size) {
+  if (env->r < 0 || env->c < 0 || env->r >= env->spec->rows || env->c >= env->spec->columns) {
     env->terminals[0] = 1;
     env->rewards[0] = -1.0;
     add_log(env);
@@ -168,19 +248,29 @@ void c_step(RepGrid *env) {
   }
 
   int pos = env->r * env->size + env->c;
-  if (env->asset_map[pos] == CAT) {
+  if (env->asset_map[pos] == TIGER) {
     env->terminals[0] = 1;
-    env->rewards[0] = -1.0;
+    env->rewards[0] = -0.1;
     add_log(env);
     c_reset(env);
     return;
+  } else if (env->asset_map[pos] == GOAL) {
+    env->terminals[0] = 1;
+    env->rewards[0] = 1.0;
+    add_log(env);
+    c_reset(env);
+    return;
+  } else if (env->asset_map[pos] == DOG) {
+    env->rewards[0] = 0.1;
+  } else {
+    env->rewards[0] = 0.0;
   }
 
-  env->rewards[0] = 1.0;
   add_log(env);
 
   env->observations[pos] = AGENT;
   env->asset_map[pos] = AGENT;
+  set_feature_obs(env);
 }
 
 // Required function. Should handle creating the client on first call
@@ -201,16 +291,20 @@ void c_render(RepGrid *env) {
   int px = 64;
   for (int i = 0; i < env->size; i++) {
     for (int j = 0; j < env->size; j++) {
-      int tex = env->asset_map[i * env->size + j];
+      int tex = env->obs_assets[i * env->size + j];
       Color color;
-      if (tex == EMPTY) {
-        continue;
+      if (tex == WALL) {
+        color = (Color){179, 179, 179, 255};  // Pastel Gray
       } else if (tex == AGENT) {
-        color = (Color){187, 0, 0, 255};
+        color = (Color){173, 216, 230, 255};  // Pastel Blue (Light Blue)
       } else if (tex == DOG) {
-        color = (Color){0, 187, 187, 255};
+        color = (Color){144, 238, 144, 255};  // Pastel Green (Light Green)
+      } else if (tex == CAT) {
+        color = (Color){255, 182, 193, 255};  // Pastel Red (Light Pink)
+      } else if (tex == TIGER) {
+        color = (Color){255, 218, 185, 255};  // Pastel Orange (Peach Puff)
       } else {
-        color = (Color){187, 187, 0, 255};
+        color = (Color){0, 0, 0, 255};        // Black (Unknown)
       }
       DrawRectangle(j * px, i * px, px, px, color);
     }
@@ -225,5 +319,5 @@ void c_close(RepGrid *env) {
     CloseWindow();
   }
   free(env->asset_map);
-  free(env->animals);
+  free(env->map);
 }

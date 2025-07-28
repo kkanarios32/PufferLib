@@ -5,8 +5,6 @@
 
 static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
   env->size = unpack(kwargs, "size");
-  env->feature_dim = unpack(kwargs, "feature_dim");
-  env->n_classes = unpack(kwargs, "n_classes");
   init_repgrid(env);
   return 0;
 }

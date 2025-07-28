@@ -14,15 +14,13 @@ class RepGrid(pufferlib.PufferEnv):
         render_mode=None,
         log_interval=128,
         size=11,
-        feature_dim=1,
-        n_classes=2,
         buf=None,
         seed=0,
     ):
         self.single_observation_space = gymnasium.spaces.Box(
-            low=0, high=1, shape=(size * size * (feature_dim + 1),), dtype=np.uint8
+            low=0, high=1, shape=(size * size * (4),), dtype=np.uint8
         )
-        self.single_action_space = gymnasium.spaces.Discrete(5)
+        self.single_action_space = gymnasium.spaces.Discrete(4)
         self.render_mode = render_mode
         self.num_agents = num_envs
         self.log_interval = log_interval
