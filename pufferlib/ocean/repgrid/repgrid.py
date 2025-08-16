@@ -35,8 +35,6 @@ class RepGrid(pufferlib.PufferEnv):
             num_envs,
             seed,
             size=size,
-            feature_dim=feature_dim,
-            n_classes=n_classes,
         )
 
     def reset(self, seed=0):
