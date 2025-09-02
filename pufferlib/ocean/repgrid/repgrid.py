@@ -13,12 +13,12 @@ class RepGrid(pufferlib.PufferEnv):
         num_envs=1,
         render_mode=None,
         log_interval=128,
-        size=11,
+        size=5,
         buf=None,
         seed=0,
     ):
         self.single_observation_space = gymnasium.spaces.Box(
-            low=0, high=1, shape=(size * size * (4),), dtype=np.uint8
+            low=0.0, high=10.0, shape=(size * size * 4,), dtype=np.float32
         )
         self.single_action_space = gymnasium.spaces.Discrete(4)
         self.render_mode = render_mode
@@ -65,11 +65,12 @@ if __name__ == "__main__":
     N = 4096
 
     env = RepGrid(num_envs=N)
+
     env.reset()
     steps = 0
 
     CACHE = 1024
-    actions = np.random.randint(0, 5, (CACHE, N))
+    actions = np.random.randint(0, 3, (CACHE, N))
 
     i = 0
     import time

@@ -193,27 +193,29 @@ void set_feature_obs(RepGrid *env) {
   memset(env->observations, 0,
          obs_tile * (ANIMAL_FEATURES + 1) * sizeof(float));
   memset(env->obs_assets, 0, obs_tile * sizeof(unsigned char));
-
-  for (int dy = -half_obs; dy <= half_obs; dy++) {
-    for (int dx = -half_obs; dx <= half_obs; dx++) {
-      int y = env->r + dy;
-      int x = env->c + dx;
-      if (x >= 0 && x < env->spec->columns && y >= 0 && y < env->spec->rows) {
-        for (int i = 0; i < ANIMAL_FEATURES + 1; i++) {
-          env->observations[i * obs_tile + (dy + half_obs) * env->size +
-                            (dx + half_obs)] =
-              env->map[i * map_tile + y * env->spec->columns + x];
-        }
-        env->obs_assets[(dy + half_obs) * env->size + (dx + half_obs)] =
-            env->asset_map[y * env->spec->columns + x];
-      } else {
-        env->observations[(dy + half_obs) * env->size + (dx + half_obs)] = WALL;
-        env->obs_assets[(dy + half_obs) * env->size + (dx + half_obs)] = WALL;
-      }
-    }
-  }
-  env->observations[obs_tile / 2] = AGENT;
-  env->obs_assets[obs_tile / 2] = AGENT;
+  //
+  // for (int dy = -half_obs; dy <= half_obs; dy++) {
+  //   for (int dx = -half_obs; dx <= half_obs; dx++) {
+  //     int y = env->r + dy;
+  //     int x = env->c + dx;
+  //     if (x >= 0 && x < env->spec->columns && y >= 0 && y < env->spec->rows)
+  //     {
+  //       for (int i = 0; i < ANIMAL_FEATURES + 1; i++) {
+  //         env->observations[i * obs_tile + (dy + half_obs) * env->size +
+  //                           (dx + half_obs)] =
+  //             env->map[i * map_tile + y * env->spec->columns + x];
+  //       }
+  //       env->obs_assets[(dy + half_obs) * env->size + (dx + half_obs)] =
+  //           env->asset_map[y * env->spec->columns + x];
+  //     } else {
+  //       env->observations[(dy + half_obs) * env->size + (dx + half_obs)] =
+  //       WALL; env->obs_assets[(dy + half_obs) * env->size + (dx + half_obs)]
+  //       = WALL;
+  //     }
+  //   }
+  // }
+  // env->observations[obs_tile / 2] = AGENT;
+  // env->obs_assets[obs_tile / 2] = AGENT;
 }
 
 void c_reset(RepGrid *env) {
@@ -274,7 +276,6 @@ void c_step(RepGrid *env) {
 
   add_log(env);
 
-  env->observations[pos] = AGENT;
   env->asset_map[pos] = AGENT;
   set_feature_obs(env);
 }
@@ -295,6 +296,7 @@ void c_render(RepGrid *env) {
   ClearBackground((Color){6, 24, 24, 255});
 
   int px = 64;
+
   for (int i = 0; i < env->size; i++) {
     for (int j = 0; j < env->size; j++) {
       int tex = env->obs_assets[i * env->size + j];
