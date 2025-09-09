@@ -16,14 +16,16 @@ class RepGrid(pufferlib.PufferEnv):
         size=11,
         buf=None,
         seed=0,
+        random_sampling=False,  # for probe training
     ):
         self.single_observation_space = gymnasium.spaces.Box(
-            low=0, high=1, shape=(size * size * (4),), dtype=np.uint8
+            low=0, high=1, shape=(size * size * (4),), dtype=np.float32
         )
         self.single_action_space = gymnasium.spaces.Discrete(4)
         self.render_mode = render_mode
         self.num_agents = num_envs
         self.log_interval = log_interval
+        self.random_sampling = random_sampling
 
         super().__init__(buf)
         self.c_envs = binding.vec_init(
@@ -35,6 +37,7 @@ class RepGrid(pufferlib.PufferEnv):
             num_envs,
             seed,
             size=size,
+            random_sampling=random_sampling,
         )
 
     def reset(self, seed=0):
@@ -59,6 +62,9 @@ class RepGrid(pufferlib.PufferEnv):
 
     def close(self):
         binding.vec_close(self.c_envs)
+
+    def get_ground_truth_counts(self):
+        return binding.vec_get_counts(self.c_envs)
 
 
 if __name__ == "__main__":

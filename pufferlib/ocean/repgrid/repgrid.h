@@ -53,7 +53,9 @@ typedef struct {
   float score; // Recommended unnormalized single real number perf metric
   float episode_return; // Recommended metric: sum of agent rewards over episode
   float episode_length; // Recommended metric: number of steps of agent episode
-  // Any extra fields you add here may be exported to Python in binding.c
+  float dogs;   // Number of dogs in current observation (for probing)
+  float cats;   // Number of cats in current observation (for probing)
+  float tigers; // Number of tigers in current observation (for probing)
   float n; // Required as the last field
 } Log;
 
@@ -71,6 +73,7 @@ typedef struct {
   unsigned char *obs_assets; // size x size
   float *map;                // map_rows x map_cols x (feature_dim + 1)
   unsigned char *asset_map;  // map_rows x map_cols
+  unsigned char *base_asset_map; // map_rows x map_cols
   Spec *spec;
   int *actions;   // up, down, left, right
   float *rewards; // +1 for feature rn...
@@ -81,6 +84,7 @@ typedef struct {
   uint8_t r;
   uint8_t c;
   int start_pos;
+  int random_sampling; // 0 = fixed positions, 1 = agent pos randomly sampled
 } RepGrid;
 
 Spec initial_layout = {
@@ -90,6 +94,7 @@ Spec initial_layout = {
 };
 
 void add_log(RepGrid *env) {
+  // env->log.obs_assets = env->obs_assets;
   env->log.perf += (env->rewards[0] > 0) ? 1 : 0;
   env->log.score += env->rewards[0];
   env->log.episode_length += env->tick;
@@ -125,14 +130,13 @@ void allocate_repgrid(RepGrid *env) {
   env->actions = (int *)calloc(1, sizeof(int));
   env->rewards = (float *)calloc(1, sizeof(float));
   env->terminals = (unsigned char *)calloc(1, sizeof(unsigned char));
-  env->obs_assets =
-      (unsigned char *)calloc(env->size * env->size, sizeof(unsigned char));
+  // env->obs_assets =
+  //     (unsigned char *)calloc(env->size * env->size, sizeof(unsigned char));
 }
 
 void free_allocated_repgrid(RepGrid *env) {
   free(env->rewards);
   free(env->observations);
-  free(env->obs_assets);
   free(env->actions);
   free(env->terminals);
 }
@@ -144,6 +148,10 @@ void alloc_assets(RepGrid *env) {
                              sizeof(float));
   env->asset_map = (unsigned char *)calloc(env->spec->rows * env->spec->columns,
                                            sizeof(unsigned char));
+  env->base_asset_map = (unsigned char *)calloc(env->spec->rows * env->spec->columns,
+                                           sizeof(unsigned char));
+  env->obs_assets =
+      (unsigned char *)calloc(env->size * env->size, sizeof(unsigned char));
 }
 
 void init_repgrid(RepGrid *env) {
@@ -158,9 +166,11 @@ void init_repgrid(RepGrid *env) {
       if (curr == 'O') {
         env->map[idx] = EMPTY;
         env->asset_map[idx] = EMPTY;
+        env->base_asset_map[idx] = EMPTY;
       } else if (curr == 'G') {
         env->map[idx] = GOAL;
         env->asset_map[idx] = GOAL;
+        env->base_asset_map[idx] = GOAL;
       } else if (curr == 'A') {
         env->start_pos = idx;
       } else {
@@ -168,12 +178,15 @@ void init_repgrid(RepGrid *env) {
         if (curr == 'D') {
           env->asset_map[idx] = DOG;
           ANIMAL_TYPE = DOG;
+          env->base_asset_map[idx] = DOG;
         } else if (curr == 'C') {
           env->asset_map[idx] = CAT;
           ANIMAL_TYPE = CAT;
+          env->base_asset_map[idx] = CAT;
         } else if (curr == 'T') {
           env->asset_map[idx] = TIGER;
           ANIMAL_TYPE = TIGER;
+          env->base_asset_map[idx] = TIGER;
         }
         // fill out the features in the obs space
         int tile = env->spec->rows * env->spec->columns;
@@ -195,9 +208,9 @@ void set_feature_obs(RepGrid *env) {
   memset(env->obs_assets, 0, obs_tile * sizeof(unsigned char));
 
   for (int dy = -half_obs; dy <= half_obs; dy++) {
-    for (int dx = -half_obs; dx <= half_obs; dx++) {
-      int y = env->r + dy;
-      int x = env->c + dx;
+    for (int dx = -half_obs; dx <= half_obs; dx++) { // distance from agent
+      int y = env->r + dy; // in map space
+      int x = env->c + dx; // in map space
       if (x >= 0 && x < env->spec->columns && y >= 0 && y < env->spec->rows) {
         for (int i = 0; i < ANIMAL_FEATURES + 1; i++) {
           env->observations[i * obs_tile + (dy + half_obs) * env->size +
@@ -212,17 +225,33 @@ void set_feature_obs(RepGrid *env) {
       }
     }
   }
-  env->observations[obs_tile / 2] = AGENT;
+  env->observations[obs_tile / 2] = AGENT; // obs centered on agent
   env->obs_assets[obs_tile / 2] = AGENT;
 }
 
-void c_reset(RepGrid *env) {
-  int start_pos = env->start_pos;
-  env->r = start_pos / env->spec->rows;
-  env->c = start_pos % env->spec->columns;
+void count_animals(RepGrid *env) {
+  env->log.dogs = 0;
+  env->log.cats = 0; 
+  env->log.tigers = 0;
+  
+  int obs_tile = env->size * env->size;
+  for (int i = 0; i < obs_tile; i++) {
+    unsigned char asset = env->obs_assets[i];
+    if (asset == DOG) env->log.dogs++;
+    else if (asset == CAT) env->log.cats++;
+    else if (asset == TIGER) env->log.tigers++;
+  }
+}
 
-  env->tick = 0;
-  set_feature_obs(env);
+void c_reset(RepGrid *env) {
+    int start_pos = env->start_pos;
+    env->r = start_pos / env->spec->columns;
+    env->c = start_pos % env->spec->columns;
+
+    env->tick = 0;
+    
+    set_feature_obs(env);
+    count_animals(env);
 }
 
 // Required function
@@ -231,8 +260,8 @@ void c_step(RepGrid *env) {
 
   int action = env->actions[0];
   env->terminals[0] = 0;
-  env->observations[env->r * env->size + env->c] = EMPTY;
-  env->asset_map[env->r * env->size + env->c] = EMPTY;
+  int oldPos = env->r * env->spec->columns + env->c;
+  env->asset_map[oldPos] = EMPTY;
 
   if (action == DOWN) {
     env->r += 1;
@@ -253,20 +282,25 @@ void c_step(RepGrid *env) {
     return;
   }
 
-  int pos = env->r * env->size + env->c;
-  if (env->asset_map[pos] == TIGER) {
+  int mapPos = env->r * env->spec->columns + env->c;
+  int dx = env->c - env->spec->columns / 2;
+  int dy = env->r - env->spec->rows / 2;
+  int obsX = env->size / 2 + dx;
+  int obsY = env->size / 2 + dy;
+  int obsPos = obsY * env->size + obsX;
+  if (env->asset_map[mapPos] == TIGER) {
     env->terminals[0] = 1;
     env->rewards[0] = -0.1;
     add_log(env);
     c_reset(env);
     return;
-  } else if (env->asset_map[pos] == GOAL) {
+  } else if (env->asset_map[mapPos] == GOAL) {
     env->terminals[0] = 1;
     env->rewards[0] = 1.0;
     add_log(env);
     c_reset(env);
     return;
-  } else if (env->asset_map[pos] == DOG) {
+  } else if (env->asset_map[mapPos] == DOG) {
     env->rewards[0] = 0.1;
   } else {
     env->rewards[0] = 0.0;
@@ -274,9 +308,10 @@ void c_step(RepGrid *env) {
 
   add_log(env);
 
-  env->observations[pos] = AGENT;
-  env->asset_map[pos] = AGENT;
+  env->asset_map[oldPos] = env->base_asset_map[oldPos];
+  env->asset_map[mapPos] = AGENT;
   set_feature_obs(env);
+  count_animals(env);
 }
 
 // Required function. Should handle creating the client on first call
@@ -326,4 +361,5 @@ void c_close(RepGrid *env) {
   }
   free(env->asset_map);
   free(env->map);
+  free(env->obs_assets);
 }
