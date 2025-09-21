@@ -2,6 +2,7 @@
 
 import gymnasium
 import numpy as np
+import torch
 
 import pufferlib
 from pufferlib.ocean.repgrid import binding
@@ -13,7 +14,7 @@ class RepGrid(pufferlib.PufferEnv):
         num_envs=1,
         render_mode=None,
         log_interval=128,
-        size=11,
+        size=5,
         buf=None,
         seed=0,
         random_sampling=False,  # for probe training
@@ -26,6 +27,9 @@ class RepGrid(pufferlib.PufferEnv):
         self.num_agents = num_envs
         self.log_interval = log_interval
         self.random_sampling = random_sampling
+        self.size = size
+
+        print("random_sampling", random_sampling)
 
         super().__init__(buf)
         self.c_envs = binding.vec_init(
@@ -66,6 +70,9 @@ class RepGrid(pufferlib.PufferEnv):
     def get_ground_truth_counts(self):
         return binding.vec_get_counts(self.c_envs)
 
+    def set_probe_counts(self, env_id: int, dogs: int, cats: int, tigers: int):
+        """Manually set probe counts overlay for a specific env id."""
+        binding.vec_set_probe_counts(self.c_envs, int(env_id), int(dogs), int(cats), int(tigers))
 
 if __name__ == "__main__":
     N = 4096

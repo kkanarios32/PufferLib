@@ -17,15 +17,15 @@
 // clang-format off
 
 const char one_goal[] = {
-    'G', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
-    'O', 'O', 'O', 'O', 'O', 'C', 'C', 'C', 'C',
-    'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C', 'C',
-    'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
-    'O', 'O', 'O', 'D', 'A', 'T', 'O', 'O', 'O',
-    'O', 'O', 'O', 'O', 'C', 'O', 'O', 'O', 'O',
-    'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
-    'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
-    'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+    'G', 'C', 'O', 'T', 'O', 'C', 'O', 'D', 'O',
+    'O', 'O', 'D', 'O', 'C', 'O', 'T', 'O', 'C',
+    'C', 'T', 'O', 'C', 'O', 'D', 'O', 'C', 'O',
+    'O', 'C', 'D', 'O', 'T', 'O', 'C', 'O', 'T',
+    'D', 'O', 'C', 'O', 'A', 'O', 'D', 'O', 'C',
+    'T', 'O', 'C', 'O', 'D', 'O', 'T', 'C', 'O',
+    'O', 'C', 'O', 'T', 'O', 'C', 'O', 'D', 'T',
+    'C', 'O', 'D', 'O', 'T', 'O', 'C', 'O', 'O',
+    'O', 'D', 'O', 'C', 'O', 'T', 'O', 'C', 'D',
 };
 
 // clang-format on
@@ -53,9 +53,9 @@ typedef struct {
   float score; // Recommended unnormalized single real number perf metric
   float episode_return; // Recommended metric: sum of agent rewards over episode
   float episode_length; // Recommended metric: number of steps of agent episode
-  float dogs;   // Number of dogs in current observation (for probing)
-  float cats;   // Number of cats in current observation (for probing)
-  float tigers; // Number of tigers in current observation (for probing)
+  float dogs;   // Count of dogs in current observation
+  float cats;   // Count of cats in current observation 
+  float tigers; // Count of tigers in current observation
   float n; // Required as the last field
 } Log;
 
@@ -85,6 +85,9 @@ typedef struct {
   uint8_t c;
   int start_pos;
   int random_sampling; // 0 = fixed positions, 1 = agent pos randomly sampled
+  int pred_dogs;
+  int pred_cats;
+  int pred_tigers;
 } RepGrid;
 
 Spec initial_layout = {
@@ -94,11 +97,9 @@ Spec initial_layout = {
 };
 
 void add_log(RepGrid *env) {
-  // env->log.obs_assets = env->obs_assets;
-  env->log.perf += (env->rewards[0] > 0) ? 1 : 0;
-  env->log.score += env->rewards[0];
-  env->log.episode_length += env->tick;
-  env->log.episode_return += env->rewards[0];
+  env->log.perf = (env->rewards[0] > 0) ? 1.0 : 0.0;  // 1 if won, 0 if lost
+  env->log.score = env->log.episode_return;  // Total episode return
+  env->log.episode_length = env->tick;  // Steps taken this episode
   env->log.n++;
 }
 
@@ -130,8 +131,6 @@ void allocate_repgrid(RepGrid *env) {
   env->actions = (int *)calloc(1, sizeof(int));
   env->rewards = (float *)calloc(1, sizeof(float));
   env->terminals = (unsigned char *)calloc(1, sizeof(unsigned char));
-  // env->obs_assets =
-  //     (unsigned char *)calloc(env->size * env->size, sizeof(unsigned char));
 }
 
 void free_allocated_repgrid(RepGrid *env) {
@@ -199,6 +198,37 @@ void init_repgrid(RepGrid *env) {
   }
 }
 
+void resample(RepGrid *env) {
+  for (int r = 0; r < env->spec->rows; r++) {
+    for (int c = 0; c < env->spec->columns; c++) {
+      int idx = env->spec->columns * r + c;
+      char curr = env->spec->layout[idx];
+      unsigned char ANIMAL_TYPE;
+      if (curr == 'D') {
+        env->asset_map[idx] = DOG;
+        ANIMAL_TYPE = DOG;
+        env->base_asset_map[idx] = DOG;
+      } else if (curr == 'C') {
+        env->asset_map[idx] = CAT;
+        ANIMAL_TYPE = CAT;
+        env->base_asset_map[idx] = CAT;
+      } else if (curr == 'T') {
+        env->asset_map[idx] = TIGER;
+        ANIMAL_TYPE = TIGER;
+        env->base_asset_map[idx] = TIGER;
+      } else {
+        break;
+      }
+      // fill out the features in the obs space
+      int tile = env->spec->rows * env->spec->columns;
+      for (int j = 0; j < ANIMAL_FEATURES; j++) {
+        env->map[(j + 1) * tile + idx] =
+            ANIMALS[(ANIMAL_TYPE - 3)][j] + gaussian_noise();
+      }
+    }
+  }
+}
+
 void set_feature_obs(RepGrid *env) {
   int half_obs = env->size / 2;
   int obs_tile = env->size * env->size;
@@ -243,13 +273,16 @@ void count_animals(RepGrid *env) {
   }
 }
 
+
 void c_reset(RepGrid *env) {
     int start_pos = env->start_pos;
     env->r = start_pos / env->spec->columns;
     env->c = start_pos % env->spec->columns;
 
     env->tick = 0;
-    
+    env->log.episode_return = 0.0;
+    env->log.episode_length = 0.0;
+     
     set_feature_obs(env);
     count_animals(env);
 }
@@ -273,40 +306,45 @@ void c_step(RepGrid *env) {
     env->c -= 1;
   }
 
+  if (env->random_sampling) {
+    env->r = rand() % env->spec->rows;
+    env->c = rand() % env->spec->columns;
+    resample(env);
+  }
+
   if (env->r < 0 || env->c < 0 || env->r >= env->spec->rows ||
       env->c >= env->spec->columns) {
     env->terminals[0] = 1;
     env->rewards[0] = -1.0;
+    env->log.episode_return += env->rewards[0];
     add_log(env);
     c_reset(env);
     return;
   }
 
   int mapPos = env->r * env->spec->columns + env->c;
-  int dx = env->c - env->spec->columns / 2;
-  int dy = env->r - env->spec->rows / 2;
-  int obsX = env->size / 2 + dx;
-  int obsY = env->size / 2 + dy;
-  int obsPos = obsY * env->size + obsX;
+  
   if (env->asset_map[mapPos] == TIGER) {
     env->terminals[0] = 1;
-    env->rewards[0] = -0.1;
+    env->rewards[0] = -0.5;
+    env->log.episode_return += env->rewards[0];
     add_log(env);
     c_reset(env);
     return;
   } else if (env->asset_map[mapPos] == GOAL) {
     env->terminals[0] = 1;
     env->rewards[0] = 1.0;
+    env->log.episode_return += env->rewards[0];
     add_log(env);
     c_reset(env);
     return;
   } else if (env->asset_map[mapPos] == DOG) {
     env->rewards[0] = 0.1;
   } else {
-    env->rewards[0] = 0.0;
+    env->rewards[0] = -0.1;
   }
 
-  add_log(env);
+  env->log.episode_return += env->rewards[0];
 
   env->asset_map[oldPos] = env->base_asset_map[oldPos];
   env->asset_map[mapPos] = AGENT;
@@ -318,7 +356,7 @@ void c_step(RepGrid *env) {
 void c_render(RepGrid *env) {
   if (!IsWindowReady()) {
     InitWindow(64 * env->size, 64 * env->size, "PufferLib Squared");
-    SetTargetFPS(5);
+    SetTargetFPS(1);
   }
 
   // Standard across our envs so exiting is always the same
@@ -344,12 +382,29 @@ void c_render(RepGrid *env) {
         color = (Color){255, 182, 193, 255}; // Pastel Red (Light Pink)
       } else if (tex == TIGER) {
         color = (Color){255, 218, 185, 255}; // Pastel Orange (Peach Puff)
+      } else if (tex == GOAL) {
+        color = (Color){255, 255, 0, 255}; // Yellow (Goal)
       } else {
         color = (Color){0, 0, 0, 255}; // Black (Unknown)
       }
       DrawRectangle(j * px, i * px, px, px, color);
     }
   }
+  // Overlay ground-truth counts
+  char buf[64];
+  snprintf(buf, sizeof(buf), "Dogs: %d", (int)env->log.dogs);
+  DrawText(buf, 8, 8, 20, (Color){255, 255, 255, 255});
+  snprintf(buf, sizeof(buf), "Cats: %d", (int)env->log.cats);
+  DrawText(buf, 8, 32, 20, (Color){255, 255, 255, 255});
+  snprintf(buf, sizeof(buf), "Tigers: %d", (int)env->log.tigers);
+  DrawText(buf, 8, 56, 20, (Color){255, 255, 255, 255});
+  // Overlay probe-predicted counts (if set)
+  snprintf(buf, sizeof(buf), "Probe Dogs: %d", (int)env->pred_dogs);
+  DrawText(buf, 8, 88, 20, (Color){255, 255, 255, 255});
+  snprintf(buf, sizeof(buf), "Probe Cats: %d", (int)env->pred_cats);
+  DrawText(buf, 8, 112, 20, (Color){255, 255, 255, 255});
+  snprintf(buf, sizeof(buf), "Probe Tigers: %d", (int)env->pred_tigers);
+  DrawText(buf, 8, 136, 20, (Color){255, 255, 255, 255});
   EndDrawing();
 }
 

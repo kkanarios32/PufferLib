@@ -492,6 +492,7 @@ class PuffeRL:
         model_path = self.save_checkpoint()
         run_id = self.logger.run_id
         path = os.path.join(self.config['data_dir'], f'{self.config["env"]}_{run_id}.pt')
+        print(f"Saving model to {path}")
         shutil.copy(model_path, path)
         return path
 
@@ -944,6 +945,26 @@ def eval(env_name, args=None, vecenv=None, policy=None):
     num_agents = vecenv.observation_space.shape[0]
     device = args['train']['device']
 
+    ob = torch.as_tensor(ob).to(device)
+    probe = None
+
+    probe_path = args.get('load_probe_path')
+    if probe_path:
+        try:
+            from pufferlib.probing import Probe
+            obs_size = driver.size
+            hidden_dim = getattr(policy, 'hidden_size', None)
+            if hidden_dim is None and hasattr(policy, 'module'):
+                hidden_dim = getattr(policy.module, 'hidden_size', None)
+            if hidden_dim is None:
+                raise RuntimeError('Policy missing hidden_size; required to init Probe')
+
+            probe = Probe(hidden_dim=hidden_dim, num_feature_types=3, obs_size=obs_size)
+            state_dict = torch.load(probe_path, map_location='cpu')
+            probe.load_state_dict(state_dict)
+        except Exception as e:
+            print(f'Warning: failed to load probe from {probe_path}: {e}')
+
     state = {}
     if args['train']['use_rnn']:
         state = dict(
@@ -970,7 +991,6 @@ def eval(env_name, args=None, vecenv=None, policy=None):
             #time.sleep(1/args['fps'])
 
         with torch.no_grad():
-            ob = torch.as_tensor(ob).to(device)
             logits, value = policy.forward_eval(ob, state)
             action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
             action = action.cpu().numpy().reshape(vecenv.action_space.shape)
@@ -980,10 +1000,20 @@ def eval(env_name, args=None, vecenv=None, policy=None):
 
         ob = vecenv.step(action)[0]
 
+        ob = torch.as_tensor(ob).to(device)
+
+        with torch.no_grad():
+            if probe:
+                hidden = policy.policy.encode_observations(ob)
+                preds = probe.predict(hidden, batch_size=len(hidden))
+                d, c, t = preds[0].tolist()
+                driver.set_probe_counts(0, int(d), int(c), int(t))
+
         if len(frames) > 0 and len(frames) == args['save_frames']:
             import imageio
             imageio.mimsave(args['gif_path'], frames, fps=args['fps'], loop=0)
             frames.append('Done')
+
 
 def sweep(args=None, env_name=None):
     args = args or load_config(env_name)
@@ -1117,6 +1147,8 @@ def load_config(env_name):
         formatter_class=RichHelpFormatter, add_help=False)
     parser.add_argument('--load-model-path', type=str, default=None,
         help='Path to a pretrained checkpoint')
+    parser.add_argument('--load-probe-path', type=str, default=None,
+        help='Path to a pretrained probe')
     parser.add_argument('--load-id', type=str,
         default=None, help='Kickstart/eval from from a finished Wandb/Neptune run')
     parser.add_argument('--render-mode', type=str, default='auto',
