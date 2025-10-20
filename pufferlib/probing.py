@@ -5,8 +5,10 @@ import pufferlib.pytorch
 import numpy as np
 import os
 
+rep_size = 16
+
 class Probe(torch.nn.Module):
-    def __init__(self, hidden_dim: int = 128, num_feature_types: int = 3, obs_size: int = 5)  -> None:
+    def __init__(self, hidden_dim: int = 32, num_feature_types: int = 3, obs_size: int = 7)  -> None:
         '''
         Initialize the probe for count classification.
         :param hidden_dim: The dimensionality of the hidden layer of the probe.
@@ -234,7 +236,7 @@ class Probe(torch.nn.Module):
 
         return metrics
 
-def collect_probe_dataset(env_name, vecenv=None, policy=None, args=None, num_samples=50, device='cpu'):
+def collect_probe_dataset(env_name, vecenv=None, policy=None, args=None, num_samples=50, device='cpu', feature_source='representation'):
     """
     Collect a dataset for probe training by running the policy in the environment.
     
@@ -245,6 +247,8 @@ def collect_probe_dataset(env_name, vecenv=None, policy=None, args=None, num_sam
         args: Configuration arguments (will be loaded if None) 
         num_samples: Number of samples to collect
         device: Device to run inference on
+        feature_source: 'representation' to use learned embeddings (default),
+                        'observation' to use raw observations as features
         
     Returns:
         Tuple of (embeddings, labels) tensors where labels are position indices
@@ -281,13 +285,16 @@ def collect_probe_dataset(env_name, vecenv=None, policy=None, args=None, num_sam
         while samples_collected < num_samples:
             ob_tensor = torch.as_tensor(ob).to(device) # (num_agents, obs_dim)
             
-            hidden = policy.policy.encode_observations(ob_tensor) # (num_agents, hidden_dim)
+            if feature_source == 'observation':
+                features = ob_tensor
+            else:
+                features = policy.policy.encode_observations(ob_tensor) # (num_agents, hidden_dim)
             
             counts = driver.get_ground_truth_counts() # (num_agents, 3)
             
             ground_truth = torch.tensor(counts, dtype=torch.long) # (num_agents, 3)
             
-            embeddings_list.append(hidden.cpu())
+            embeddings_list.append(features.cpu())
             labels_list.append(ground_truth)
             samples_collected += 1
             
@@ -311,7 +318,7 @@ def collect_probe_dataset(env_name, vecenv=None, policy=None, args=None, num_sam
     return embeddings, labels
 
 
-def train_probe(embeddings, labels, hidden_dim=128, num_feature_types=3, obs_size=5,
+def train_probe(embeddings, labels, hidden_dim=rep_size, num_feature_types=3, obs_size=7,
                        num_epochs=50, learning_rate=0.001, train_split=0.8,
                        early_stopping=True, patience=10, min_delta=0.0,
                        save_path='experiments/probe/probe.pt'):
@@ -370,7 +377,7 @@ def train_probe(embeddings, labels, hidden_dim=128, num_feature_types=3, obs_siz
     return probe, metrics
 
 
-def evaluate_probe(probe, env_name, vecenv=None, policy=None, args=None, num_samples=50, device='cpu'):
+def evaluate_probe(probe, env_name, vecenv=None, policy=None, args=None, num_samples=50, device='cpu', feature_source='representation'):
     """
     Evaluate a trained probe on fresh data.
     
@@ -386,9 +393,67 @@ def evaluate_probe(probe, env_name, vecenv=None, policy=None, args=None, num_sam
     Returns:
         Dictionary of evaluation metrics
     """
-    embeddings, labels = collect_probe_dataset(env_name, vecenv, policy, args, num_samples, device)
+    embeddings, labels = collect_probe_dataset(env_name, vecenv, policy, args, num_samples, device, feature_source)
     
     return probe.evaluate(embeddings, labels)
+
+def checkpoint_probe(env_name, policy, accuracy, checkpoint, feature_source='representation'):
+    args = load_config(env_name)
+    embeddings, labels = collect_probe_dataset(env_name, args=args, policy=policy, num_samples=10, feature_source=feature_source)
+    probe, metrics = train_probe(embeddings, labels, hidden_dim=None, num_epochs=20)
+    accuracy[checkpoint] = metrics['overall_accuracy']
+
+def update_probe(env_name, policy, accuracy, checkpoint, existing_probe=None, hidden_dim=rep_size, obs_size=7, feature_source='representation'):
+    """
+    Update an existing probe with new data or create one if it doesn't exist.
+    
+    Args:
+        env_name: Name of the environment
+        policy: Current policy to extract features from
+        accuracy: Dictionary to store accuracy metrics
+        checkpoint: Checkpoint metric
+        existing_probe: Existing probe to continue training (or None to create new)
+        hidden_dim: Dimensionality of embeddings
+        obs_size: Size of observation grid
+        feature_source: 'representation' or 'observation'
+        
+    Returns:
+        Trained probe
+    """
+    args = load_config(env_name)
+    embeddings, labels = collect_probe_dataset(env_name, args=args, policy=policy, num_samples=10, feature_source=feature_source)
+
+    train = 5
+    
+    if existing_probe is None:
+        probe = Probe(hidden_dim=hidden_dim, num_feature_types=3, obs_size=obs_size)
+        train = 10
+    else:
+        probe = existing_probe
+        
+    n_samples = len(embeddings)
+    n_train = int(n_samples * 0.8)
+    indices = torch.randperm(n_samples)
+    train_embeddings = embeddings[indices[:n_train]]
+    train_labels = labels[indices[:n_train]]
+    val_embeddings = embeddings[indices[n_train:]]
+    val_labels = labels[indices[n_train:]]
+    
+    probe.train(
+        train_embeddings, train_labels,
+        num_epochs=train,
+        learning_rate=0.001,
+        val_embeddings=val_embeddings,
+        val_labels=val_labels,
+        early_stopping=False,
+        save_path=None,
+    )
+    
+    if len(val_embeddings) > 0:
+        metrics = probe.evaluate(val_embeddings, val_labels)
+        accuracy[checkpoint] = metrics
+    
+    return probe
 
 if __name__ == "__main__":
     args = load_config("puffer_repgrid")

@@ -17,21 +17,27 @@
 // clang-format off
 
 const char one_goal[] = {
-    'G', 'C', 'O', 'T', 'O', 'C', 'O', 'D', 'O',
-    'O', 'O', 'D', 'O', 'C', 'O', 'T', 'O', 'C',
-    'C', 'T', 'O', 'C', 'O', 'D', 'O', 'C', 'O',
-    'O', 'C', 'D', 'O', 'T', 'O', 'C', 'O', 'T',
-    'D', 'O', 'C', 'O', 'A', 'O', 'D', 'O', 'C',
-    'T', 'O', 'C', 'O', 'D', 'O', 'T', 'C', 'O',
-    'O', 'C', 'O', 'T', 'O', 'C', 'O', 'D', 'T',
-    'C', 'O', 'D', 'O', 'T', 'O', 'C', 'O', 'O',
-    'O', 'D', 'O', 'C', 'O', 'T', 'O', 'C', 'D',
+    'G', 'C', 'O', 'T', 'O', 'C', 'O', 'D', 'O', 'C', 'O', 'T', 'O', 'D', 'O',
+    'O', 'O', 'D', 'O', 'C', 'O', 'T', 'O', 'C', 'O', 'D', 'O', 'C', 'O', 'T',
+    'C', 'T', 'O', 'C', 'O', 'D', 'O', 'C', 'O', 'T', 'O', 'C', 'O', 'D', 'O',
+    'D', 'C', 'C', 'O', 'T', 'O', 'C', 'O', 'T', 'O', 'C', 'O', 'D', 'O', 'C',
+    'D', 'O', 'C', 'O', 'O', 'O', 'T', 'C', 'O', 'D', 'O', 'T', 'O', 'C', 'O',
+    'T', 'D', 'D', 'O', 'A', 'O', 'D', 'O', 'C', 'O', 'T', 'O', 'D', 'O', 'C',
+    'O', 'C', 'O', 'D', 'O', 'C', 'O', 'D', 'T', 'O', 'C', 'O', 'T', 'O', 'D',
+    'C', 'O', 'D', 'O', 'T', 'O', 'C', 'O', 'O', 'D', 'O', 'C', 'O', 'T', 'O',
+    'O', 'D', 'O', 'C', 'O', 'T', 'O', 'C', 'D', 'O', 'T', 'O', 'C', 'O', 'D',
+    'C', 'O', 'T', 'O', 'D', 'O', 'C', 'O', 'T', 'O', 'C', 'O', 'D', 'O', 'C',
+    'O', 'D', 'O', 'C', 'O', 'D', 'O', 'T', 'O', 'C', 'O', 'T', 'O', 'C', 'O',
+    'T', 'O', 'C', 'O', 'T', 'O', 'D', 'O', 'C', 'O', 'D', 'O', 'T', 'O', 'C',
+    'O', 'C', 'O', 'D', 'O', 'C', 'O', 'T', 'O', 'D', 'O', 'C', 'O', 'T', 'O',
+    'D', 'O', 'T', 'O', 'C', 'O', 'D', 'O', 'C', 'O', 'T', 'O', 'C', 'O', 'D',
+    'O', 'C', 'O', 'T', 'O', 'D', 'O', 'C', 'O', 'T', 'O', 'C', 'O', 'D', 'O',
 };
 
 // clang-format on
 
 const float ANIMALS[NUM_ANIMALS][ANIMAL_FEATURES] = {
-    {1.0, 2.0, 3.0}, {3.0, 2.0, 1.0}, {3.0, 1.0, 2.0}};
+    {1.0, 2.0, 3.0}, {2.0, 3.0, 1.0}, {3.0, 1.0, 2.0}};
 
 const unsigned char DOWN = 0;
 const unsigned char UP = 1;
@@ -92,14 +98,15 @@ typedef struct {
 
 Spec initial_layout = {
     .layout = one_goal,
-    .columns = 9,
-    .rows = 9,
+    .columns = 15,
+    .rows = 15,
 };
 
 void add_log(RepGrid *env) {
-  env->log.perf = (env->rewards[0] > 0) ? 1.0 : 0.0;  // 1 if won, 0 if lost
-  env->log.score = env->log.episode_return;  // Total episode return
-  env->log.episode_length = env->tick;  // Steps taken this episode
+  env->log.perf += (env->rewards[0] > 0) ? 1.0 : 0.0;  // 1 if won, 0 if lost
+  env->log.score += env->rewards[0];
+  env->log.episode_return += env->rewards[0];
+  env->log.episode_length += env->tick;  // Steps taken this episode
   env->log.n++;
 }
 
@@ -280,8 +287,17 @@ void c_reset(RepGrid *env) {
     env->c = start_pos % env->spec->columns;
 
     env->tick = 0;
-    env->log.episode_return = 0.0;
-    env->log.episode_length = 0.0;
+
+    for (int r = 0; r < env->spec->rows; r++) {
+      for (int c = 0; c < env->spec->columns; c++) {
+        int idx = env->spec->columns * r + c;
+        char curr = env->spec->layout[idx];
+        if (curr == 'D') {
+          env->asset_map[idx] = DOG;
+          env->base_asset_map[idx] = DOG;
+        }
+      }
+    }
      
     set_feature_obs(env);
     count_animals(env);
@@ -316,7 +332,6 @@ void c_step(RepGrid *env) {
       env->c >= env->spec->columns) {
     env->terminals[0] = 1;
     env->rewards[0] = -1.0;
-    env->log.episode_return += env->rewards[0];
     add_log(env);
     c_reset(env);
     return;
@@ -326,25 +341,29 @@ void c_step(RepGrid *env) {
   
   if (env->asset_map[mapPos] == TIGER) {
     env->terminals[0] = 1;
-    env->rewards[0] = -0.5;
-    env->log.episode_return += env->rewards[0];
+    env->rewards[0] = -1.0;
     add_log(env);
     c_reset(env);
     return;
   } else if (env->asset_map[mapPos] == GOAL) {
     env->terminals[0] = 1;
     env->rewards[0] = 1.0;
-    env->log.episode_return += env->rewards[0];
     add_log(env);
     c_reset(env);
     return;
-  } else if (env->asset_map[mapPos] == DOG) {
-    env->rewards[0] = 0.1;
-  } else {
-    env->rewards[0] = -0.1;
   }
-
-  env->log.episode_return += env->rewards[0];
+  else if (env->asset_map[mapPos] == DOG) {
+    env->rewards[0] = 0.1;
+    env->log.episode_return += 0.1;
+    env->log.score += 0.1;
+    env->asset_map[mapPos] = EMPTY;
+    env->base_asset_map[mapPos] = EMPTY;
+    // printf("%f\n", env->rewards[0]);
+  }
+  else {
+    env->rewards[0] = 0;
+    // printf("%f\n", env->rewards[0]);
+  }
 
   env->asset_map[oldPos] = env->base_asset_map[oldPos];
   env->asset_map[mapPos] = AGENT;
@@ -356,7 +375,7 @@ void c_step(RepGrid *env) {
 void c_render(RepGrid *env) {
   if (!IsWindowReady()) {
     InitWindow(64 * env->size, 64 * env->size, "PufferLib Squared");
-    SetTargetFPS(1);
+    SetTargetFPS(3);
   }
 
   // Standard across our envs so exiting is always the same
@@ -405,6 +424,8 @@ void c_render(RepGrid *env) {
   DrawText(buf, 8, 112, 20, (Color){255, 255, 255, 255});
   snprintf(buf, sizeof(buf), "Probe Tigers: %d", (int)env->pred_tigers);
   DrawText(buf, 8, 136, 20, (Color){255, 255, 255, 255});
+  snprintf(buf, sizeof(buf), "Reward: %f", env->rewards[0]);
+  DrawText(buf, 8, 160, 20, (Color){255, 255, 255, 255});
   EndDrawing();
 }
 

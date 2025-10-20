@@ -18,6 +18,8 @@ import configparser
 from threading import Thread
 from collections import defaultdict, deque
 
+import matplotlib.pyplot as plt
+
 import numpy as np
 import psutil
 
@@ -102,6 +104,7 @@ class PuffeRL:
         self.ep_lengths = torch.zeros(total_agents, device=device, dtype=torch.int32)
         self.ep_indices = torch.arange(total_agents, device=device, dtype=torch.int32)
         self.free_idx = total_agents
+        self.accuracy = {}
 
         # LSTM
         if config['use_rnn']:
@@ -183,6 +186,7 @@ class PuffeRL:
         self.epoch = 0
         self.global_step = 0
         self.last_log_step = 0
+        self.last_checkpoint_time = 0
         self.last_log_time = time.time()
         self.start_time = time.time()
         self.utilization = Utilization()
@@ -190,6 +194,12 @@ class PuffeRL:
         self.stats = defaultdict(list)
         self.last_stats = defaultdict(list)
         self.losses = {}
+
+        self.probe = None
+        self.current_return = -float('inf')
+        self.checkpoint_epoch_interval = 1
+        self.last_checkpoint_return = -float('inf')
+        self.feature_accuracy = defaultdict(dict)
 
         # Dashboard
         self.model_size = sum(p.numel() for p in policy.parameters() if p.requires_grad)
@@ -310,6 +320,9 @@ class PuffeRL:
 
     @record
     def train(self):
+
+        from pufferlib.probing import checkpoint_probe
+
         profile = self.profile
         epoch = self.epoch
         profile('train', epoch)
@@ -442,7 +455,19 @@ class PuffeRL:
             self.last_log_time = time.time()
             self.last_log_step = self.global_step
             profile.clear()
-
+            if logs.get('environment/episode_return') is not None:
+                self.current_return = logs['environment/episode_return']
+            
+            if self.epoch % self.checkpoint_epoch_interval == 0 and self.current_return > -float('inf'):
+                if self.current_return > self.last_checkpoint_return * 1.01:
+                    from pufferlib.probing import update_probe
+                    self.probe = update_probe(
+                        self.config['env'], self.policy, self.accuracy, self.current_return,
+                        existing_probe=self.probe, feature_source='representation'
+                    )
+                    self.last_checkpoint_return = self.current_return
+                    print(f'Probe checkpoint at epoch {self.epoch}, return: {self.current_return:.3f}')
+            
         if self.epoch % config['checkpoint_interval'] == 0 or done_training:
             self.save_checkpoint()
             self.msg = f'Checkpoint saved at update {self.epoch}'
@@ -924,6 +949,37 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
     logs = pufferl.mean_and_log()
     if logs is not None:
         all_logs.append(logs)
+
+    if pufferl.accuracy:
+        checkpoints = sorted(pufferl.accuracy.keys())
+        
+        overall_acc = [pufferl.accuracy[c].get('overall_accuracy', 0) for c in checkpoints]
+        feature_names = ['Dogs', 'Cats', 'Tigers']
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+        
+        ax1.plot(checkpoints, overall_acc, 'o-', linewidth=2, markersize=6, label='Overall') # overall accuracy
+        ax1.set_xlabel('Episode Return', fontsize=12)
+        ax1.set_ylabel('Accuracy', fontsize=12)
+        ax1.set_title('Probe Overall Accuracy vs Policy Performance', fontsize=13, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend()
+        
+        colors = ['#2ecc71', '#e74c3c', '#f39c12']  # green, red, orange
+        for feat_idx, (name, color) in enumerate(zip(feature_names, colors)): # per feature
+            per_feat_acc = [pufferl.accuracy[c].get('per_feature_accuracy', [0,0,0])[feat_idx] for c in checkpoints]
+            ax2.plot(checkpoints, per_feat_acc, 'o-', linewidth=2, markersize=6, 
+                    label=name, color=color)
+        
+        ax2.set_xlabel('Episode Return', fontsize=12)
+        ax2.set_ylabel('Accuracy', fontsize=12)
+        ax2.set_title('Per-Feature Probe Accuracy vs Policy Performance', fontsize=13, fontweight='bold')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend()
+        
+        plt.tight_layout()
+        plt.savefig('accuracy.png', dpi=150, bbox_inches='tight')
+        print(f'Saved probe accuracy plot to accuracy.png')
 
     pufferl.print_dashboard()
     model_path = pufferl.close()

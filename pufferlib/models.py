@@ -8,6 +8,8 @@ import pufferlib.emulation
 import pufferlib.pytorch
 import pufferlib.spaces
 
+rep_size = 16
+
 
 class Default(nn.Module):
     '''Default PyTorch policy. Flattens obs and applies a linear layer.
@@ -21,7 +23,7 @@ class Default(nn.Module):
     the recurrent cell into encode_observations and put everything after
     into decode_actions.
     '''
-    def __init__(self, env, hidden_size=128):
+    def __init__(self, env, hidden_size=rep_size):
         super().__init__()
         self.hidden_size = hidden_size
         self.is_multidiscrete = isinstance(env.single_action_space,
@@ -95,7 +97,7 @@ class Default(nn.Module):
         return logits, values
 
 class LSTMWrapper(nn.Module):
-    def __init__(self, env, policy, input_size=128, hidden_size=128):
+    def __init__(self, env, policy, input_size=rep_size, hidden_size=rep_size):
         '''Wraps your policy with an LSTM without letting you shoot yourself in the
         foot with bad transpose and shape operations. This saves much pain.
         Requires that your policy define encode_observations and decode_actions.

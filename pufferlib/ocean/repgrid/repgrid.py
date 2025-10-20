@@ -14,7 +14,7 @@ class RepGrid(pufferlib.PufferEnv):
         num_envs=1,
         render_mode=None,
         log_interval=128,
-        size=5,
+        size=7,
         buf=None,
         seed=0,
         random_sampling=False,  # for probe training
@@ -28,8 +28,6 @@ class RepGrid(pufferlib.PufferEnv):
         self.log_interval = log_interval
         self.random_sampling = random_sampling
         self.size = size
-
-        print("random_sampling", random_sampling)
 
         super().__init__(buf)
         self.c_envs = binding.vec_init(
