@@ -197,8 +197,8 @@ class PuffeRL:
 
         self.probe = None
         self.current_return = -float('inf')
-        self.checkpoint_epoch_interval = 1
-        self.last_checkpoint_return = -float('inf')
+        self.probe_interval = max(1, config['total_timesteps'] // 25)
+        self.next_probe_step = self.probe_interval
         self.feature_accuracy = defaultdict(dict)
 
         # Dashboard
@@ -321,8 +321,6 @@ class PuffeRL:
     @record
     def train(self):
 
-        from pufferlib.probing import checkpoint_probe
-
         profile = self.profile
         epoch = self.epoch
         profile('train', epoch)
@@ -336,6 +334,8 @@ class PuffeRL:
         vf_clip = config['vf_clip_coef']
         anneal_beta = b0 + (1 - b0)*a*self.epoch/self.total_epochs
         self.ratio[:] = 1
+
+        print("policy: ", self.policy)
 
         for mb in range(self.total_minibatches):
             profile('train_misc', epoch, nest=True)
@@ -458,15 +458,18 @@ class PuffeRL:
             if logs.get('environment/episode_return') is not None:
                 self.current_return = logs['environment/episode_return']
             
-            if self.epoch % self.checkpoint_epoch_interval == 0 and self.current_return > -float('inf'):
-                if self.current_return > self.last_checkpoint_return * 1.01:
-                    from pufferlib.probing import update_probe
-                    self.probe = update_probe(
-                        self.config['env'], self.policy, self.accuracy, self.current_return,
-                        existing_probe=self.probe, feature_source='representation'
-                    )
-                    self.last_checkpoint_return = self.current_return
-                    print(f'Probe checkpoint at epoch {self.epoch}, return: {self.current_return:.3f}')
+            if self.global_step >= self.next_probe_step:
+                from pufferlib.probing import update_probe
+                n_feats = 4 if self.config.get('key_door') else 3
+                self.probe = update_probe(
+                    self.config['env'], self.policy, self.accuracy, self.global_step,
+                    existing_probe=self.probe, feature_source='representation',
+                    num_feature_types=n_feats
+                )
+                if self.global_step in self.accuracy:
+                    self.accuracy[self.global_step]['episode_return'] = self.current_return
+                self.next_probe_step += self.probe_interval
+                print(f'Probe checkpoint at step {self.global_step}')
             
         if self.epoch % config['checkpoint_interval'] == 0 or done_training:
             self.save_checkpoint()
@@ -952,34 +955,50 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None):
 
     if pufferl.accuracy:
         checkpoints = sorted(pufferl.accuracy.keys())
-        
+
         overall_acc = [pufferl.accuracy[c].get('overall_accuracy', 0) for c in checkpoints]
-        feature_names = ['Dogs', 'Cats', 'Tigers']
-        
+        returns = [pufferl.accuracy[c].get('episode_return', 0) for c in checkpoints]
+        feature_names = ['Dogs', 'Cats', 'Tigers', 'Keys'] if pufferl.config.get('key_door') else ['Dogs', 'Cats', 'Tigers']
+
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-        
-        ax1.plot(checkpoints, overall_acc, 'o-', linewidth=2, markersize=6, label='Overall') # overall accuracy
-        ax1.set_xlabel('Episode Return', fontsize=12)
-        ax1.set_ylabel('Accuracy', fontsize=12)
-        ax1.set_title('Probe Overall Accuracy vs Policy Performance', fontsize=13, fontweight='bold')
+
+        ax1.plot(checkpoints, overall_acc, 'o-', linewidth=2, markersize=6, label='Probe Accuracy', color='#3498db')
+        ax1.set_xlabel('Timesteps', fontsize=12)
+        ax1.set_ylabel('Accuracy', fontsize=12, color='#3498db')
+        ax1.tick_params(axis='y', labelcolor='#3498db')
         ax1.grid(True, alpha=0.3)
-        ax1.legend()
-        
-        colors = ['#2ecc71', '#e74c3c', '#f39c12']  # green, red, orange
-        for feat_idx, (name, color) in enumerate(zip(feature_names, colors)): # per feature
-            per_feat_acc = [pufferl.accuracy[c].get('per_feature_accuracy', [0,0,0])[feat_idx] for c in checkpoints]
-            ax2.plot(checkpoints, per_feat_acc, 'o-', linewidth=2, markersize=6, 
+
+        ax1_ret = ax1.twinx()
+        ax1_ret.plot(checkpoints, returns, 's--', linewidth=2, markersize=6, label='Episode Return', color='#e67e22')
+        ax1_ret.set_ylabel('Episode Return', fontsize=12, color='#e67e22')
+        ax1_ret.tick_params(axis='y', labelcolor='#e67e22')
+
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax1_ret.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2)
+        ax1.set_title('Probe Accuracy & Return vs Training Progress', fontsize=13, fontweight='bold')
+
+        colors = ['#2ecc71', '#e74c3c', '#f39c12', '#9b59b6']
+        n_feats = len(feature_names)
+        for feat_idx, (name, color) in enumerate(zip(feature_names, colors)):
+            per_feat_acc = [pufferl.accuracy[c].get('per_feature_accuracy', [0]*n_feats)[feat_idx] for c in checkpoints]
+            ax2.plot(checkpoints, per_feat_acc, 'o-', linewidth=2, markersize=6,
                     label=name, color=color)
-        
-        ax2.set_xlabel('Episode Return', fontsize=12)
+
+        ax2.set_xlabel('Timesteps', fontsize=12)
         ax2.set_ylabel('Accuracy', fontsize=12)
-        ax2.set_title('Per-Feature Probe Accuracy vs Policy Performance', fontsize=13, fontweight='bold')
+        ax2.set_title('Per-Feature Probe Accuracy vs Training Progress', fontsize=13, fontweight='bold')
         ax2.grid(True, alpha=0.3)
         ax2.legend()
-        
+
         plt.tight_layout()
         plt.savefig('accuracy.png', dpi=150, bbox_inches='tight')
         print(f'Saved probe accuracy plot to accuracy.png')
+
+        dir_name = os.path.dirname("experiments/probe/probe.pt")
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+        torch.save(pufferl.probe.state_dict(), "experiments/probe/probe.pt")
 
     pufferl.print_dashboard()
     model_path = pufferl.close()
